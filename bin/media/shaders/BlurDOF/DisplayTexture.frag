@@ -1,4 +1,4 @@
-#version 450 core
+#version 330 core
 
 uniform sampler2D BaseTexture;
 
@@ -8,5 +8,5 @@ out vec4 fColor;
 
 void main()
 {
-    fColor = texture2D(BaseTexture, vTexCoord);
+    fColor = texture(BaseTexture, vTexCoord);
 }
