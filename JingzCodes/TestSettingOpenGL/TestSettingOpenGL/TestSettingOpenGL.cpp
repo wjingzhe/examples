@@ -10,6 +10,11 @@
 #include <vermilion.h>
 #include <cmath>
 
+
+#define WinWidth 360
+#define WinHeight 640
+#define PI 3.1415926f
+
 enum VAO_IDs
 {
 	Triangles,
@@ -35,20 +40,25 @@ enum Attrib_IDs
 GLuint VAOs[NumVAOs];
 GLuint Buffers[NumBuffers];
 
+
+
 const GLuint NumVertices = 6;
 
 
-GLuint baseTexture;
 static const float black[] = { 0.0f,0.0f,0.0f,0.0f };
-GLsizei TexWidth = 800, TexHeight = 600;
-GLuint frameBuffer, texture1, texture2;
+GLsizei TexWidth = WinWidth, TexHeight = WinHeight;
+GLuint InTextureSRV,DepthTextureSRV;
+GLuint texture1, texture2;
+GLuint frameBuffer;
 
 
 GLuint DisplayTexture_program;
 GLuint GaussianBlur_program;
+GLuint BlurDof_program;
 
-int BlurSize = 3;
+int BlurSize = 10;
 float GaussianWeight1D[31];
+float GaussianWeight2D[31];
 
 void InitBaseScreenGeometry()
 {
@@ -61,8 +71,8 @@ void InitBaseScreenGeometry()
 
 	GLfloat uvs[NumVertices][2] =
 	{
-		{0.0f,1.0f},{1.0f,1.0f},{0.0f,0.0f},
-		{1.0f,1.0f},{1.0f,0.0f},{0.0f,0.0f},
+		{0.0f,0.0f},{1.0f,0.0f},{0.0f,1.0f},
+		{1.0f,0.0f},{1.0f,1.0f},{0.0f,1.0f},
 	};
 
 	glBindVertexArray(VAOs[Triangles]);
@@ -110,7 +120,7 @@ void InitGaussianBlur()
 
 	auto count = BlurSize * 2 + 1;
 	memset(GaussianWeight1D, 0, 31);
-
+	memset(GaussianWeight2D, 0, 31);
 
 
 	for (int i =0;i<count;++i)
@@ -119,6 +129,14 @@ void InitGaussianBlur()
 		GaussianWeight1D[i] = std::exp((-1.0f*x*x) / (0.5f*BlurSize*BlurSize));
 	}
 
+	int tempSize = BlurSize * (float(WinHeight) / float(WinWidth));
+	for (int i = 0; i < 2* tempSize+1; ++i)
+	{
+		auto x = i - tempSize;
+		GaussianWeight2D[i] = std::exp((-1.0f*x*x) / (0.5f*tempSize*tempSize));
+	}
+
+	
 
 	glCreateTextures(GL_TEXTURE_2D, 1, &texture1);
 	glTextureStorage2D(texture1, 1, GL_RGBA32F, TexWidth, TexHeight);
@@ -129,8 +147,24 @@ void InitGaussianBlur()
 	glBindImageTexture(1, texture2, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
 
+	
+
 	glCreateFramebuffers(1, &frameBuffer);
 }
+
+void InitBlurDOF()
+{
+	ShaderInfo BlurDofShaders[] =
+	{
+		{GL_VERTEX_SHADER,"media/shaders/BlurDOF/BlurForDOF.vs.glsl"},
+		{GL_FRAGMENT_SHADER,"media/shaders/BlurDOF/BlurForDOF.fs.glsl"},
+		{GL_NONE,NULL}
+	};
+	BlurDof_program = LoadShaders(BlurDofShaders);
+
+
+}
+
 
 void init(void)
 {
@@ -140,6 +174,10 @@ void init(void)
 
 	InitBaseScreenGeometry();
 
+	//glCreateTextures(GL_TEXTURE_2D, 1, &textureDepth);
+	//glTextureStorage2D(textureDepth, 1, GL_RGBA32F, TexWidth, TexHeight);
+	//glBindImageTexture(1, texture2, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
 
 	auto str = glGetError();
 	InitToDisplaySimpleTexture();
@@ -147,12 +185,14 @@ void init(void)
 	InitGaussianBlur();
 	auto str2 = glGetError();
 
+	InitBlurDOF();
+	auto str3 = glGetError();
+	
 	//vglImageData image;
-	baseTexture = vglLoadTexture("media/test3.dds", 0, NULL);
+	InTextureSRV = vglLoadTexture("media/360_640.dds", 0, NULL);
 	//vglUnloadImage(&image);
 
-
-
+	DepthTextureSRV = vglLoadTexture("media/depth.dds", 0, NULL);
 
 
 }
@@ -178,7 +218,7 @@ void DrawGaussianBlur(GLuint inTexture, GLuint outTexture, GLuint frameBuffer)
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer);
 	glNamedFramebufferTexture(frameBuffer, GL_COLOR_ATTACHMENT0, texture1, 0);
 
-	glViewport(0, 0, TexWidth, TexWidth);
+	glViewport(0, 0, TexWidth, TexHeight);
 	glClearBufferfv(GL_COLOR, 0, black);
 	glClearDepth(0.0f);
 
@@ -203,7 +243,7 @@ void DrawGaussianBlur(GLuint inTexture, GLuint outTexture, GLuint frameBuffer)
 
 
 	auto uDirectionLoc = glGetUniformLocation(GaussianBlur_program, "uDirection");
-	float dir[2] = { 1.0f / 800.0f, 0.0f };
+	float dir[2] = { 1.0f / WinWidth, 0.0f };
 	glUniform2fv(uDirectionLoc, 1, dir);
 	//auto str23 = glGetError();
 
@@ -224,8 +264,11 @@ void DrawGaussianBlur(GLuint inTexture, GLuint outTexture, GLuint frameBuffer)
 	glBindTexture(GL_TEXTURE_2D, texture1);
 	glActiveTexture(GL_TEXTURE0);
 	dir[0] = 0.0f;
-	dir[1] = 1.0f / 800.0f;
+	dir[1] = 1.0f / WinHeight;
 	glUniform2fv(uDirectionLoc, 1, dir);
+
+	int tempSize = BlurSize * (float(WinHeight) / float(WinWidth));
+	glUniform1fv(uWeightMapLoc, 2 * tempSize + 1, GaussianWeight2D);
 
 	glDrawArrays(GL_TRIANGLES, 0, NumVertices);
 
@@ -233,12 +276,69 @@ void DrawGaussianBlur(GLuint inTexture, GLuint outTexture, GLuint frameBuffer)
 
 }
 
-void display(void)
+void DrawBlurDOF()
 {
 
-	DrawGaussianBlur(baseTexture,texture1, frameBuffer);
+
+	glUseProgram(BlurDof_program);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+
+
+	glUniform1i(glGetUniformLocation(BlurDof_program, "g_TextureClear"), 0);
+	auto str0 = glGetError();
+	glBindTexture(GL_TEXTURE_2D, InTextureSRV);
+	glActiveTexture(GL_TEXTURE0);
+	auto str = glGetError();	
+	glActiveTexture(GL_TEXTURE1);
+	glUniform1i(glGetUniformLocation(BlurDof_program, "g_TextureBlur"), 1);
+	glBindTexture(GL_TEXTURE_2D, texture2);
+	auto str3 = glGetError();
+	glActiveTexture(GL_TEXTURE2);
+	glUniform1i(glGetUniformLocation(BlurDof_program, "g_TextureDepth"), 2);
+	glBindTexture(GL_TEXTURE_2D, DepthTextureSRV);
+	auto str4 = glGetError();
+
+
+	float g_RenderTargetSize[2] = { 360.0,640.0f };
+	glUniform2fv(glGetUniformLocation(BlurDof_program, "g_RenderTargetSize"), 1, g_RenderTargetSize);
+
+	float g_radioWtoH = g_RenderTargetSize[0] / g_RenderTargetSize[1];
+	glUniform1f(glGetUniformLocation(BlurDof_program, "g_radioWtoH"), g_radioWtoH);
+
+	float FovRadY = PI / 4.0f;
+	float tanHalfFovY = std::tanf(FovRadY*0.5f);
+	glUniform1f(glGetUniformLocation(BlurDof_program, "g_tanHalfFovY"), tanHalfFovY);
+
+	GLfloat view_matrix[16] = {
+	1.0f, 0.0f, 0.0f, 0.0f,
+	0.0f, 1.0f, 0.0f, 0.0f,
+	0.0f, 0.0f, 1.0f, 0.0f,
+	0.0f, 0.0f, 0.0f, 1.0f
+	};
+
+	glUniformMatrix4fv(glGetUniformLocation(BlurDof_program, "g_mViewInv"), 1, GL_FALSE, view_matrix);
 	
-	DisplayTexture(texture2);
+	glViewport(0, 0, TexWidth, TexHeight);
+	glEnable(GL_TEXTURE_2D);
+	glDrawArrays(GL_TRIANGLES, 0, NumVertices);
+
+	auto str2 = glGetError();
+
+}
+
+void display(void)
+{
+	glDepthRange(1.0, 1000.0f);
+
+	DrawGaussianBlur(InTextureSRV,texture1, frameBuffer);
+	
+
+	DrawBlurDOF();
+
+	//DisplayTexture(texture2);
 	
 }
 
@@ -248,7 +348,7 @@ int main(int argc, char** argv)
 
 	glfwInit();
 
-	GLFWwindow* pWindow = glfwCreateWindow(800, 600, "Triangles", NULL, NULL);
+	GLFWwindow* pWindow = glfwCreateWindow(WinWidth, WinHeight, "Triangles", NULL, NULL);
 
 	glfwMakeContextCurrent(pWindow);
 	gl3wInit();

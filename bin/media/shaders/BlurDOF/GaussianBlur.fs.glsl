@@ -5,12 +5,12 @@
 in vec2 vTexCoord;
 
 
-uniform vec2 uDirection = vec2(0.1f,0);
-uniform int uBlurSize=5;
+uniform vec2 uDirection;
+uniform int uBlurSize;
 
 uniform sampler2D inTexture;
 
-uniform float WeightMap[32];
+uniform float WeightMap[31];
 
 out vec4 OutColor;
 
