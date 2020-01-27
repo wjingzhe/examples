@@ -1,4 +1,4 @@
-#version 450 core
+#version 330 core
 
 precision highp float;
 
@@ -25,8 +25,8 @@ vec3 ConvertScreenToNdc(vec2 screenXY)
 {
 	float tempX = screenXY.x - 0.5f;
 	float tempY = screenXY.y - 0.5f;
-//	float tempDepth = g_TextureDepth.Load(uvec3(tempX*g_RenderTargetSize.x, tempY*g_RenderTargetSize.y, 0)).x;
-float tempDepth = 1.0f;
+	float tempDepth = texture2D(g_TextureDepth,vec2(tempX,tempY)).x;
+//float tempDepth = 1.0f;
 	//float ndcX = tempX / g_RenderTargetSize.x - 1.0f;
 	//float ndcY = -tempY / g_RenderTargetSize.y + 1.0f;
 
@@ -65,15 +65,42 @@ void main()
 	vec3 viewPos3 = ConvertProjToView(projPos3);
 	vec4 PosW = g_mViewInv*vec4(viewPos3,1.0f);
 	
+	vec2 uv = vec2(vTexCoord.x,1-vTexCoord.y);
+	float tempDepth = texture2D(g_TextureDepth,uv).x;
+	//float tempDepth = g_NearZ*g_RangZ / (g_RangZ - texture2D(g_TextureDepth,uv).x);
 	
 	vec4 color = vec4(0.0);
+	int j = 0;
 	
-	if(abs(PosW.x)<=0.05f)
+	vec2 uv2 = uv+vec2(1.0f/g_RenderTargetSize.x,0.0f);
+	vec2 uv4 = uv+vec2(1.0f/g_RenderTargetSize.x,1.0f/g_RenderTargetSize.y);
+	vec2 uv8 = uv+vec2(1.0f/g_RenderTargetSize.x,-1.0f/g_RenderTargetSize.y);
+		
+	vec2 uv6 = uv+vec2(0,1.0f/g_RenderTargetSize.y);
+	vec2 uv7 = uv+vec2(0,-1.0f/g_RenderTargetSize.y);
+
+	vec2 uv9 = uv+vec2(-1.0f/g_RenderTargetSize.x,0.0f);
+	vec2 uv3 = uv+vec2(-1.0f/g_RenderTargetSize.x,1.0f/g_RenderTargetSize.y);
+	vec2 uv5 = uv+vec2(-1.0f/g_RenderTargetSize.x,-1.0f/g_RenderTargetSize.y);
+
+
+	//if(texture2D(g_TextureDepth,uv).x>tempDepth)
 	{
-		OutColor = texture2D(g_TextureClear, vTexCoord.xy);
+	//	color+=
+	}
+
+	//if()
+	
+	//OutColor = vec4(texture2D(g_TextureDepth,uv).x,texture2D(g_TextureDepth,uv).x,texture2D(g_TextureDepth,uv).x,1.0f);
+	//OutColor = texture2D(g_TextureDepth,vec2(vTexCoord.x,1.0f-vTexCoord.y)).rrrr;
+	
+	if(tempDepth<0.166f)
+	{
+		OutColor = texture2D(g_TextureClear, vec2(vTexCoord.x,1.0f-vTexCoord.y));
 	}
 	else
 	{
-		OutColor = mix(texture2D(g_TextureClear, vTexCoord.xy),texture2D(g_TextureBlur, vTexCoord.xy),(abs(PosW.x)-0.05f)/0.05f);
+	//	OutColor = texture2D(g_TextureBlur, vec2(vTexCoord.x,1.0f-vTexCoord.y));
+		OutColor = mix(texture2D(g_TextureBlur, vec2(vTexCoord.x,1.0f-vTexCoord.y)),texture2D(g_TextureClear, vec2(vTexCoord.x,1.0f-vTexCoord.y)),tempDepth);
 	}
 }

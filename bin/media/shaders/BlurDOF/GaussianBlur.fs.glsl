@@ -1,6 +1,6 @@
-#version 450 core
+#version 330 core
 
-//precision mediump float;
+precision highp float;
 
 in vec2 vTexCoord;
 
@@ -10,7 +10,7 @@ uniform int uBlurSize;
 
 uniform sampler2D inTexture;
 
-uniform float WeightMap[31];
+uniform float WeightMap[64];
 
 out vec4 OutColor;
 

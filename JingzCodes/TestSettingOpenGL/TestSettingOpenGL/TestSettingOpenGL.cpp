@@ -56,7 +56,7 @@ GLuint DisplayTexture_program;
 GLuint GaussianBlur_program;
 GLuint BlurDof_program;
 
-int BlurSize = 10;
+int BlurSize = 5;
 float GaussianWeight1D[31];
 float GaussianWeight2D[31];
 
@@ -189,10 +189,10 @@ void init(void)
 	auto str3 = glGetError();
 	
 	//vglImageData image;
-	InTextureSRV = vglLoadTexture("media/360_640.dds", 0, NULL);
+	InTextureSRV = vglLoadTexture("media/scene.dds", 0, NULL);
 	//vglUnloadImage(&image);
 
-	DepthTextureSRV = vglLoadTexture("media/depth.dds", 0, NULL);
+	DepthTextureSRV = vglLoadTexture("media/depth32.dds", 0, NULL);
 
 
 }

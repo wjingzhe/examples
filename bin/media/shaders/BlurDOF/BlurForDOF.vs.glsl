@@ -1,4 +1,4 @@
-#version 450 core
+#version 330 core
 
 in vec4 PositionH;
 in vec2 uv;

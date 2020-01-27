@@ -1,6 +1,6 @@
-#version 450 core
+#version 330 core
 
-//precision highp float;
+precision highp float;
 
 in vec4 inPosition;
 in vec2 uv;
