@@ -1,381 +1,306 @@
-// TestSettingOpenGL.cpp : This file contains the 'main' function. Program execution begins and ends there.
+//jingz
+// 1.先使用glBeginTransformFeedback将模型顶点数据画在geometry_vbo中;
+// 2.特效的update_vs中，从geometry_vbo获取模型每3个顶点组成一个几何面和特效进行相交测试并根据时间来更新位置;
+// 3.有两个vbo,分别用于生成特效点，并用tik-tok结构读取写入TransformFeedback的数据缓存着；在对应的fs执行过程中会绘制结果出来
 //
-
 #include "pch.h"
-#include <iostream>
 
-#include "vgl.h"
+#include "vapp.h"
+#include "vutils.h"
+
 #include "LoadShaders.h"
 
-#include <vermilion.h>
-#include <cmath>
+#include "vmath.h"
+
+#include "vbm.h"
+#include <stdio.h>
+
+BEGIN_APP_DECLARATION(TransformFeedbackExample)
+
+//Override functions from base class
+virtual void Initialize(const char * title);
+virtual void Display(bool auto_redraw);
+virtual void Finalize(void);
+virtual void Resize(int width, int height);
+
+//Member variables
+float aspect;
+GLuint update_program;
+GLuint vao[2];
+GLuint vbo[2];
+GLuint xfb;
+
+GLuint render_program;
+GLuint geometry_vbo;
+GLuint render_vao;
+GLuint render_model_matrix_loc;
+GLuint render_projection_matrix_loc;
 
 
-#define WinWidth 360
-#define WinHeight 640
-#define PI 3.1415926f
+GLuint geometry_tex;
 
-enum VAO_IDs
+GLuint model_matrix_loc;
+GLuint projection_matrix_loc;
+GLuint triangle_count_loc;
+GLuint time_step_loc;
+
+VBObject object;
+
+END_APP_DECLARATION();
+
+//main函数和主循环
+DEFINE_APP(TransformFeedbackExample, "TransformFeedback Example")
+
+const int point_count = 5000;
+static unsigned int seed = 0x13371337;
+
+static inline float random_float()
 {
-	Triangles,
-	Sphere,
-	NumVAOs
-};
+	float res;
 
+	unsigned int tmp;
 
-enum Buffer_IDs
-{
-	Postion,
-	UV,
-	NumBuffers
-};
+	seed *= 16807;
 
-enum Attrib_IDs
-{
-	vPosition = 0,
-	uv,
-};
+	tmp = seed ^ (seed >> 4) ^ (seed << 15);
 
+	*((unsigned int *)&res) = (tmp >> 9) | 0x3F800000;
 
-GLuint VAOs[NumVAOs];
-GLuint Buffers[NumBuffers];
-
-
-
-const GLuint NumVertices = 6;
-
-
-static const float black[] = { 0.0f,0.0f,0.0f,0.0f };
-GLsizei TexWidth = WinWidth, TexHeight = WinHeight;
-GLuint InTextureSRV,DepthTextureSRV;
-GLuint texture1, texture2;
-GLuint frameBuffer;
-
-
-GLuint DisplayTexture_program;
-GLuint GaussianBlur_program;
-GLuint BlurDof_program;
-
-int BlurSize = 5;
-float GaussianWeight1D[31];
-float GaussianWeight2D[31];
-
-void InitBaseScreenGeometry()
-{
-	GLfloat vertices[NumVertices][4] =
-	{
-		{ -1.0f, -1.0f,0.0f,1.0f }, {  1.0f, -1.0f,0.0f,1.0f }, { -1.0f,  1.0f,0.0f,1.0f },  // Triangle 1
-		{  1.0f, -1.0f,0.0f,1.0f }, {  1.0f,  1.0f,0.0f,1.0f }, { -1.0f,  1.0f,0.0f,1.0f },   // Triangle 2
-	};
-
-
-	GLfloat uvs[NumVertices][2] =
-	{
-		{0.0f,0.0f},{1.0f,0.0f},{0.0f,1.0f},
-		{1.0f,0.0f},{1.0f,1.0f},{0.0f,1.0f},
-	};
-
-	glBindVertexArray(VAOs[Triangles]);
-
-	glBindBuffer(GL_ARRAY_BUFFER, Buffers[Postion]);
-	glBufferStorage(GL_ARRAY_BUFFER, sizeof(vertices), vertices, 0);
-	glVertexAttribPointer(vPosition, 4, GL_FLOAT,
-		GL_FALSE, 0, BUFFER_OFFSET(0));
-	glEnableVertexAttribArray(vPosition);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-	glBindBuffer(GL_ARRAY_BUFFER, Buffers[UV]);
-	glVertexAttribPointer(uv, 2, GL_FLOAT,
-		GL_FALSE, 0, NULL);
-	glBufferStorage(GL_ARRAY_BUFFER, sizeof(uvs), uvs, 0);
-	glEnableVertexAttribArray(uv);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	return (res - 1.0f);
 }
 
-void InitToDisplaySimpleTexture()
+static vmath::vec3 random_vector(float minmag = 0.0f, float maxmag = 1.0f)
 {
+	vmath::vec3 randomVec(random_float()*2.0f - 1.0f, random_float()*2.0f - 1.0f, random_float()*2.0f - 1.0f);
+	randomVec = normalize(randomVec);
+	randomVec *= (random_float()*(maxmag - minmag) + minmag);
+
+	return randomVec;
+}
+
+void TransformFeedbackExample::Initialize(const char * title)
+{
+	int i, j;
+
+	base::Initialize(title);
+
+	////////////////////////////////////
+	/* update_program */
+	////////////////////
 
 	ShaderInfo DisplayTextureShaders[] =
 	{
-		{GL_VERTEX_SHADER,"media/shaders/BlurDOF/DisplayTexture.vert"},
-		{GL_FRAGMENT_SHADER,"media/shaders/BlurDOF/DisplayTexture.frag"},
-		{GL_NONE,NULL}
+		{ GL_VERTEX_SHADER,"media/shaders/TransformFeedback/TransformFeedback.vert" },
+		{ GL_FRAGMENT_SHADER,"media/shaders/TransformFeedback/TransformFeedback.frag" },
+		{ GL_NONE,NULL }
 	};
 
-	DisplayTexture_program = LoadShaders(DisplayTextureShaders);
-}
+	update_program = LoadShaders(DisplayTextureShaders);
 
-
-void InitGaussianBlur()
-{
-
-	ShaderInfo GaussianBlurShaders[] =
+	static const char * varyings[] =
 	{
-		{GL_VERTEX_SHADER,"media/shaders/BlurDOF/GaussianBlur.vs.glsl"},
-		{GL_FRAGMENT_SHADER,"media/shaders/BlurDOF/GaussianBlur.fs.glsl"},
-		{GL_NONE,NULL}
+		"position_out","velocity_out"
 	};
 
-	GaussianBlur_program = LoadShaders(GaussianBlurShaders);
+	glTransformFeedbackVaryings(update_program, 2, varyings, GL_INTERLEAVED_ATTRIBS);
 
-	auto count = BlurSize * 2 + 1;
-	memset(GaussianWeight1D, 0, 31);
-	memset(GaussianWeight2D, 0, 31);
+	glLinkProgram(update_program);
+	glUseProgram(update_program);
+
+	model_matrix_loc = glGetUniformLocation(update_program, "model_matrix");
+	projection_matrix_loc = glGetUniformLocation(update_program, "projection_matrix");
+	triangle_count_loc = glGetUniformLocation(update_program, "triangle_count");
+	time_step_loc = glGetUniformLocation(update_program, "time_step");
 
 
-	for (int i =0;i<count;++i)
+	////////////////////////////////////
+	/* render_program */
+	////////////////////
+	ShaderInfo RenderShaders[] =
 	{
-		auto x = i - BlurSize;
-		GaussianWeight1D[i] = std::exp((-1.0f*x*x) / (0.5f*BlurSize*BlurSize));
+		{ GL_VERTEX_SHADER,"media/shaders/TransformFeedback/render.vert" },
+		{ GL_FRAGMENT_SHADER,"media/shaders/TransformFeedback/blue.frag" },
+		{ GL_NONE,NULL }
+	};
+
+	render_program = LoadShaders(RenderShaders);
+
+	static const char * varyings2[] = 
+	{
+		"world_space_position"
+	};
+
+	glTransformFeedbackVaryings(render_program, 1, varyings2, GL_INTERLEAVED_ATTRIBS);
+
+	glLinkProgram(render_program);
+	glUseProgram(render_program);
+
+	render_model_matrix_loc = glGetUniformLocation(render_program, "model_matrix");
+	render_projection_matrix_loc = glGetUniformLocation(render_program, "projection_matrix");
+
+
+	////////////////////////////////////
+	/* init */
+	////////////////////
+
+	glGenVertexArrays(2, vao);
+	glGenBuffers(2, vbo);
+
+
+	for (i = 0;i<2;i++)
+	{
+		glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, vbo[i]);
+		glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, point_count*(sizeof(vmath::vec4)+sizeof(vmath::vec3)),NULL,GL_DYNAMIC_COPY );//Copy-数据从一个OpenGL缓冲区读取,然后作为顶点数据,用于渲染
+
+		if (i==0)
+		{
+			struct buffer_t
+			{
+				vmath::vec4 position;
+				vmath::vec3 velocity;
+			}* buffer = (buffer_t*)glMapBuffer(GL_TRANSFORM_FEEDBACK_BUFFER,GL_WRITE_ONLY);
+
+			for (j = 0;j<point_count;++j)
+			{
+				buffer[j].velocity = random_vector();
+				buffer[j].position = vmath::vec4(
+					buffer[j].velocity + vmath::vec3(-0.5f, 40.f, 0.0f), 1.0f);
+
+				buffer[j].velocity = vmath::vec3(buffer[j].velocity[0], buffer[j].velocity[1] * 0.3f,
+					buffer[j].velocity[2] * 0.3f);
+
+			}//for
+
+			glUnmapBuffer(GL_TRANSFORM_FEEDBACK_BUFFER);
+		}//if
+
+
+		glBindVertexArray(vao[i]);
+		glBindBuffer(GL_ARRAY_BUFFER, vbo[i]);
+		glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(vmath::vec4) + sizeof(vmath::vec3), NULL);
+		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(vmath::vec4) + sizeof(vmath::vec3), (GLvoid*)sizeof(vmath::vec4));
+		glEnableVertexAttribArray(0);
+		glEnableVertexAttribArray(1);
 	}
 
-	int tempSize = BlurSize * (float(WinHeight) / float(WinWidth));
-	for (int i = 0; i < 2* tempSize+1; ++i)
-	{
-		auto x = i - tempSize;
-		GaussianWeight2D[i] = std::exp((-1.0f*x*x) / (0.5f*tempSize*tempSize));
-	}
+	//创建纹理缓冲区，并绑定到纹理管理对象
+	glGenBuffers(1, &geometry_vbo);
+	glGenTextures(1, &geometry_tex);
 
-	
-
-	glCreateTextures(GL_TEXTURE_2D, 1, &texture1);
-	glTextureStorage2D(texture1, 1, GL_RGBA32F, TexWidth, TexHeight);
-	glBindImageTexture(0, texture1, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-
-	glCreateTextures(GL_TEXTURE_2D, 1, &texture2);
-	glTextureStorage2D(texture2, 1, GL_RGBA32F, TexWidth, TexHeight);
-	glBindImageTexture(1, texture2, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+	glBindBuffer(GL_TEXTURE_BUFFER, geometry_vbo);
+	glBufferData(GL_TEXTURE_BUFFER, 1024 * 2014 * sizeof(vmath::vec4), NULL, GL_DYNAMIC_COPY);
+	glBindTexture(GL_TEXTURE_BUFFER, geometry_tex);
+	glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, geometry_vbo);// 需要将纹理缓冲区对象绑定到纹理上才有用,绑定时候可以设置访问格式
 
 
-	
+	//将数组输入
+	glGenVertexArrays(1, &render_vao);
+	glBindVertexArray(render_vao);
+	glBindBuffer(GL_ARRAY_BUFFER, geometry_vbo);
+	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);//但是只有gl_Position数据项
+	glEnableVertexAttribArray(0);
 
-	glCreateFramebuffers(1, &frameBuffer);
-}
-
-void InitBlurDOF()
-{
-	ShaderInfo BlurDofShaders[] =
-	{
-		{GL_VERTEX_SHADER,"media/shaders/BlurDOF/BlurForDOF.vs.glsl"},
-		{GL_FRAGMENT_SHADER,"media/shaders/BlurDOF/BlurForDOF.fs.glsl"},
-		{GL_NONE,NULL}
-	};
-	BlurDof_program = LoadShaders(BlurDofShaders);
-
-
-}
-
-
-void init(void)
-{
-	
-	glGenVertexArrays(NumVAOs, VAOs);
-	glCreateBuffers(NumBuffers, Buffers);
-
-	InitBaseScreenGeometry();
-
-	//glCreateTextures(GL_TEXTURE_2D, 1, &textureDepth);
-	//glTextureStorage2D(textureDepth, 1, GL_RGBA32F, TexWidth, TexHeight);
-	//glBindImageTexture(1, texture2, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-
-
-	auto str = glGetError();
-	InitToDisplaySimpleTexture();
-	auto str1 = glGetError();
-	InitGaussianBlur();
-	auto str2 = glGetError();
-
-	InitBlurDOF();
-	auto str3 = glGetError();
-	
-	//vglImageData image;
-	InTextureSRV = vglLoadTexture("media/scene.dds", 0, NULL);
-	//vglUnloadImage(&image);
-
-	DepthTextureSRV = vglLoadTexture("media/depth32.dds", 0, NULL);
-
-
-}
-
-void DisplayTexture(GLuint inTexture)
-{
-	//DisplayTexture
-	glUseProgram(DisplayTexture_program);
-	glClearBufferfv(GL_COLOR, 0, black);
-	glBindVertexArray(VAOs[Triangles]);
-	glActiveTexture(GL_TEXTURE0);
-
-	glUniform1i(glGetUniformLocation(GaussianBlur_program, "BaseTexture"), 0);
-	glBindTexture(GL_TEXTURE_2D, inTexture);
-	glEnable(GL_TEXTURE_2D);
-	glDrawArrays(GL_TRIANGLES, 0, NumVertices);
-}
-
-void DrawGaussianBlur(GLuint inTexture, GLuint outTexture, GLuint frameBuffer)
-{
-	glUseProgram(GaussianBlur_program);
-
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer);
-	glNamedFramebufferTexture(frameBuffer, GL_COLOR_ATTACHMENT0, texture1, 0);
-
-	glViewport(0, 0, TexWidth, TexHeight);
-	glClearBufferfv(GL_COLOR, 0, black);
-	glClearDepth(0.0f);
-
-	//glGenerateMipmap(texture);
-	
-	glEnable(GL_TEXTURE_2D);
-
-
-	glBindFragDataLocation(GaussianBlur_program, 0, "Color");
-
-//	auto str8 = glGetError();
-	glClearBufferfv(GL_COLOR, 0, black);
-	glBindVertexArray(VAOs[Triangles]);
-	//auto str5 = glGetError();
-
-	auto tex0 = glGetUniformLocation(GaussianBlur_program, "inTexture");
-	glBindTexture(GL_TEXTURE_2D, inTexture);
-	glActiveTexture(GL_TEXTURE0);
-	auto str24 = glGetError();
-
-
-
-
-	auto uDirectionLoc = glGetUniformLocation(GaussianBlur_program, "uDirection");
-	float dir[2] = { 1.0f / WinWidth, 0.0f };
-	glUniform2fv(uDirectionLoc, 1, dir);
-	//auto str23 = glGetError();
-
-	auto uBlurSizeLoc = glGetUniformLocation(GaussianBlur_program, "uBlurSize");
-	glUniform1i(uBlurSizeLoc, BlurSize);
-
-	//
-	//
-	auto uWeightMapLoc = glGetUniformLocation(GaussianBlur_program, "WeightMap");
-	glUniform1fv(uWeightMapLoc, BlurSize * 2 + 1, GaussianWeight1D);
-
-	
-	glEnable(GL_TEXTURE_2D);
-	glDrawArrays(GL_TRIANGLES, 0, NumVertices);
-
-
-	glNamedFramebufferTexture(frameBuffer, GL_COLOR_ATTACHMENT0, texture2, 0);
-	glBindTexture(GL_TEXTURE_2D, texture1);
-	glActiveTexture(GL_TEXTURE0);
-	dir[0] = 0.0f;
-	dir[1] = 1.0f / WinHeight;
-	glUniform2fv(uDirectionLoc, 1, dir);
-
-	int tempSize = BlurSize * (float(WinHeight) / float(WinWidth));
-	glUniform1fv(uWeightMapLoc, 2 * tempSize + 1, GaussianWeight2D);
-
-	glDrawArrays(GL_TRIANGLES, 0, NumVertices);
-
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
-}
-
-void DrawBlurDOF()
-{
-
-
-	glUseProgram(BlurDof_program);
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClearDepth(1.0f);
+
+	object.LoadFromVBM("media/armadillo_low.vbm", 0, 1, 2);
+}
+
+
+static inline int min(int a, int b)
+{
+	return a < b ? a : b;
+}
+
+void TransformFeedbackExample::Display(bool auto_redraw)
+{
+	static int frame_count = 0;
+
+	float t = float(app_time() & 0x3FFFF) / float(0x3FFFF);
+
+	static float q = 0.0f;
+
+	static const vmath::vec3 X(1.0f, 0.0f, 0.0f);
+	static const vmath::vec3 Y(0.0f, 1.0f, 0.0f);
+	static const vmath::vec3 Z(0.0f, 0.0f, 1.0f);
+
+	
+	vmath::mat4 model_matrix( vmath::scale(0.3f)*
+		vmath::rotate(t*360.0f,0.0f,1.0f,0.0f)*
+		vmath::rotate(t*360.0f*3.0f,0.0f,0.0f,1.0f)
+	);
+	vmath::mat4 projection_matrix(vmath::frustum(-1.0f, 1.0f, -aspect, aspect, 1.0f, 5000.0f)
+		*vmath::translate(0.0f, 0.0f, -100.0f)
+	);
+
+
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+	glEnable(GL_CULL_FACE);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
 
-
-	glUniform1i(glGetUniformLocation(BlurDof_program, "g_TextureClear"), 0);
-	auto str0 = glGetError();
-	glBindTexture(GL_TEXTURE_2D, InTextureSRV);
-	glActiveTexture(GL_TEXTURE0);
-	auto str = glGetError();	
-	glActiveTexture(GL_TEXTURE1);
-	glUniform1i(glGetUniformLocation(BlurDof_program, "g_TextureBlur"), 1);
-	glBindTexture(GL_TEXTURE_2D, texture2);
-	auto str3 = glGetError();
-	glActiveTexture(GL_TEXTURE2);
-	glUniform1i(glGetUniformLocation(BlurDof_program, "g_TextureDepth"), 2);
-	glBindTexture(GL_TEXTURE_2D, DepthTextureSRV);
-	auto str4 = glGetError();
-
-
-	float g_RenderTargetSize[2] = { 360.0,640.0f };
-	glUniform2fv(glGetUniformLocation(BlurDof_program, "g_RenderTargetSize"), 1, g_RenderTargetSize);
-
-	float g_radioWtoH = g_RenderTargetSize[0] / g_RenderTargetSize[1];
-	glUniform1f(glGetUniformLocation(BlurDof_program, "g_radioWtoH"), g_radioWtoH);
-
-	float FovRadY = PI / 4.0f;
-	float tanHalfFovY = std::tanf(FovRadY*0.5f);
-	glUniform1f(glGetUniformLocation(BlurDof_program, "g_tanHalfFovY"), tanHalfFovY);
-
-	GLfloat view_matrix[16] = {
-	1.0f, 0.0f, 0.0f, 0.0f,
-	0.0f, 1.0f, 0.0f, 0.0f,
-	0.0f, 0.0f, 1.0f, 0.0f,
-	0.0f, 0.0f, 0.0f, 1.0f
-	};
-
-	glUniformMatrix4fv(glGetUniformLocation(BlurDof_program, "g_mViewInv"), 1, GL_FALSE, view_matrix);
+	glUseProgram(render_program);
+	glUniformMatrix4fv(render_model_matrix_loc, 1, GL_FALSE, model_matrix);
+	glUniformMatrix4fv(render_projection_matrix_loc, 1, GL_FALSE, projection_matrix);
 	
-	glViewport(0, 0, TexWidth, TexHeight);
-	glEnable(GL_TEXTURE_2D);
-	glDrawArrays(GL_TRIANGLES, 0, NumVertices);
-
-	auto str2 = glGetError();
-
-}
-
-void display(void)
-{
-	glDepthRange(1.0, 1000.0f);
-
-	DrawGaussianBlur(InTextureSRV,texture1, frameBuffer);
+	glBindVertexArray(render_vao);
 	
+	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, geometry_vbo);
 
-	DrawBlurDOF();
-
-	//DisplayTexture(texture2);
-	
-}
+	glBeginTransformFeedback(GL_TRIANGLES);
+	object.Render();
+	glEndTransformFeedback();
 
 
-int main(int argc, char** argv)
-{
 
-	glfwInit();
+	glUseProgram(update_program);
+	model_matrix = vmath::mat4::identity();
+	glUniformMatrix4fv(model_matrix_loc, 1, GL_FALSE, model_matrix);
+	glUniformMatrix4fv(projection_matrix_loc, 1, GL_FALSE, projection_matrix);
+	glUniform1i(triangle_count_loc, object.GetVertexCount() / 3);
 
-	GLFWwindow* pWindow = glfwCreateWindow(WinWidth, WinHeight, "Triangles", NULL, NULL);
-
-	glfwMakeContextCurrent(pWindow);
-	gl3wInit();
-
-	init();
-    
-	while (!glfwWindowShouldClose(pWindow))
+	if (t>q)
 	{
-		display();
-
-		glfwSwapBuffers(pWindow);
-
-		glfwPollEvents();
+		glUniform1f(time_step_loc, (t - q)*2000.0f);
 	}
 
-	glfwDestroyWindow(pWindow);
+	q = t;
 
-	glfwTerminate();
+	if ((frame_count & 1)!=0 )
+	{
+		glBindVertexArray(vao[1]);
+		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, vbo[0]);
+	}
+	else
+	{
+		glBindVertexArray(vao[0]);
+		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, vbo[1]);
+	}
+
+	glBeginTransformFeedback(GL_POINTS);
+	glDrawArrays(GL_POINTS, 0, min(point_count, (frame_count >> 3)));
+	glEndTransformFeedback();
+
+	glBindVertexArray(0);
+
+	frame_count++;
+
+	base::Display();
+
 }
 
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
+void TransformFeedbackExample::Finalize(void)
+{
+	glUseProgram(0);
+	glDeleteProgram(update_program);
+	glDeleteVertexArrays(2, vao);
+	glDeleteBuffers(2, vbo);
+}
 
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
+void TransformFeedbackExample::Resize(int width, int height)
+{
+	glViewport(0, 0, width, height);
+
+	aspect = float(height) / float(width);
+}
